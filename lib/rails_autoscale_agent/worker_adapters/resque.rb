@@ -16,7 +16,11 @@ module RailsAutoscaleAgent
 
       def enabled?
         require 'resque'
-        logger.info "Resque enabled"
+
+        log_msg = String.new("Resque enabled")
+        log_msg << " with long-running job support" if track_long_running_jobs?
+        logger.info log_msg
+
         true
       rescue LoadError
         false
@@ -32,6 +36,16 @@ module RailsAutoscaleAgent
           return
         end
 
+        if track_long_running_jobs?
+          busy_counts = Hash.new { |h,k| h[k] = 0}
+
+          ::Resque.working.each do |worker|
+            if !worker.idle? && job = worker.job
+              busy_counts[job['queue']] += 1
+            end
+          end
+        end
+
         # Ensure we continue to collect metrics for known queue names, even when nothing is
         # enqueued at the time. Without this, it will appears that the agent is no longer reporting.
         self.queues |= current_queues
@@ -41,9 +55,21 @@ module RailsAutoscaleAgent
           depth = ::Resque.size(queue)
           store.push depth, Time.now, queue, :qd
           log_msg << "resque-qd.#{queue}=#{depth} "
+
+          if track_long_running_jobs?
+            busy_count = busy_counts[queue]
+            store.push busy_count, Time.now, queue, :busy
+            log_msg << "resque-busy.#{queue}=#{busy_count} "
+          end
         end
 
         logger.debug log_msg
+      end
+
+      private
+
+      def track_long_running_jobs?
+        Config.instance.track_long_running_jobs
       end
     end
   end
